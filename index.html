@@ -1,184 +1,25 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Mario FK Dance – CPSC 4870</title>
+    <title>Mario FK Dance – CPSC 4870</title>
 
-  <!-- Importmap: resolves bare Three.js specifiers so no bundler is needed.
-       GitHub Pages compatible – all deps served from CDN. -->
-  <script type="importmap">
-  {
-    "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js",
-      "three/examples/jsm/controls/OrbitControls.js": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/controls/OrbitControls.js",
-      "three/examples/jsm/loaders/GLTFLoader.js":     "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/loaders/GLTFLoader.js",
-      "three/examples/jsm/loaders/OBJLoader.js":      "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/loaders/OBJLoader.js",
-      "three/examples/jsm/loaders/STLLoader.js":      "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/loaders/STLLoader.js",
-      "three/examples/jsm/geometries/ParametricGeometry.js": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/geometries/ParametricGeometry.js",
-      "three/examples/jsm/libs/stats.module.js":      "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/libs/stats.module.js"
-    }
-  }
-  </script>
+    <!-- lil-gui as UMD global (same pattern as course pset) -->
+    <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19.1/dist/lil-gui.umd.min.js"></script>
 
-  <style>
-    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
-    body   { background: #0a0e1a; overflow: hidden; font-family: 'Segoe UI', 'SF Pro Text', monospace; }
-    canvas { display: block; }
+    <script type="importmap">
+    {
+        "imports": {
+            "three":  "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/": "https://unpkg.com/three@0.160.0/"
+        }
+    }
+    </script>
 
-    /* ── Info Panel (top-right) ── */
-    #panel {
-      position: fixed; top: 16px; right: 16px;
-      width: 272px;
-      background: rgba(8, 12, 28, 0.88);
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      border-radius: 12px;
-      padding: 16px 18px 14px;
-      color: #dde;
-      font-size: 11.5px;
-      line-height: 1.65;
-      backdrop-filter: blur(10px);
-      pointer-events: none;
-      user-select: none;
-    }
-    #panel h1 {
-      font-size: 13.5px;
-      font-weight: 700;
-      color: #ffd700;
-      letter-spacing: 0.4px;
-      margin-bottom: 2px;
-    }
-    #panel h2 {
-      font-size: 10.5px;
-      font-weight: 400;
-      color: #7a8aaa;
-      letter-spacing: 0.3px;
-      margin-bottom: 10px;
-    }
-
-    .sec { margin-top: 10px; }
-    .sec-label {
-      font-size: 9.5px;
-      font-weight: 700;
-      color: #5bc8f5;
-      text-transform: uppercase;
-      letter-spacing: 1.1px;
-      margin-bottom: 3px;
-      padding-bottom: 2px;
-      border-bottom: 1px solid rgba(91, 200, 245, 0.18);
-    }
-    .row { display: flex; justify-content: space-between; }
-    .row .lbl { color: #7a8aaa; }
-    .row .val { color: #fff; font-weight: 600; font-variant-numeric: tabular-nums; }
-
-    .badge {
-      display: inline-flex; align-items: center; gap: 5px;
-      padding: 3px 11px;
-      border-radius: 20px;
-      font-size: 11px;
-      font-weight: 700;
-      margin-bottom: 10px;
-    }
-    .badge-dance       { background: rgba(40,180,90,0.22);  color: #5dfc8a; border: 1px solid rgba(40,180,90,0.45); }
-    .badge-interactive { background: rgba(220,110,40,0.22); color: #ffb45d; border: 1px solid rgba(220,110,40,0.45); }
-
-    .highlight { color: #ffd700; }
-
-    /* ── Controls hint (bottom-center) ── */
-    #hint {
-      position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%);
-      background: rgba(8, 12, 28, 0.85);
-      border: 1px solid rgba(255,255,255,0.1);
-      border-radius: 8px;
-      padding: 8px 22px;
-      color: #7a8aaa;
-      font-size: 11px;
-      letter-spacing: 0.2px;
-      white-space: nowrap;
-      backdrop-filter: blur(8px);
-      pointer-events: none;
-    }
-    #hint b { color: #ffd700; font-weight: 700; }
-    #hint span.sep { margin: 0 8px; opacity: 0.4; }
-
-    /* ── Loading screen ── */
-    #loading {
-      position: fixed; inset: 0;
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      gap: 16px;
-      background: #0a0e1a;
-      color: #ffd700;
-      font-size: 22px;
-      font-weight: 700;
-      letter-spacing: 1px;
-      z-index: 200;
-    }
-    #loading .sub { font-size: 12px; color: #5a6880; font-weight: 400; letter-spacing: 0.5px; }
-    #loading .spinner {
-      width: 36px; height: 36px;
-      border: 3px solid rgba(255,215,0,0.15);
-      border-top-color: #ffd700;
-      border-radius: 50%;
-      animation: spin 0.9s linear infinite;
-    }
-    @keyframes spin { to { transform: rotate(360deg); } }
-  </style>
+    <style>
+        body { margin: 0; overflow: hidden; }
+    </style>
 </head>
 <body>
-
-  <!-- Loading overlay -->
-  <div id="loading">
-    <div class="spinner"></div>
-    Loading Mario…
-    <div class="sub">mario.glb · FK + Quaternion SLERP</div>
-  </div>
-
-  <!-- Info Panel -->
-  <div id="panel">
-    <h1>FK + Quaternion SLERP</h1>
-    <h2>CPSC 4870 · 3D Spatial Computing · Yale</h2>
-
-    <div id="badge" class="badge badge-dance">&#9679; Dancing</div>
-
-    <div class="sec">
-      <div class="sec-label">Animation State</div>
-      <div class="row"><span class="lbl">Beat</span><span class="val" id="ui-beat">—</span></div>
-      <div class="row"><span class="lbl">SLERP <em>t</em></span><span class="val" id="ui-slerp">—</span></div>
-      <div class="row"><span class="lbl">Cycle</span><span class="val" id="ui-cycle">—</span></div>
-    </div>
-
-    <div class="sec">
-      <div class="sec-label">Selected Joint · SO(3)</div>
-      <div class="row"><span class="lbl">Name</span><span class="val highlight" id="ui-jname">—</span></div>
-      <div class="row"><span class="lbl">q<sub>w</sub></span><span class="val" id="ui-qw">—</span></div>
-      <div class="row"><span class="lbl">q<sub>x</sub></span><span class="val" id="ui-qx">—</span></div>
-      <div class="row"><span class="lbl">q<sub>y</sub></span><span class="val" id="ui-qy">—</span></div>
-      <div class="row"><span class="lbl">q<sub>z</sub></span><span class="val" id="ui-qz">—</span></div>
-    </div>
-
-    <div class="sec">
-      <div class="sec-label">SE(3) Chain · Left Shoe</div>
-      <div class="row"><span class="lbl">x</span><span class="val" id="ui-x">—</span></div>
-      <div class="row"><span class="lbl">y</span><span class="val" id="ui-y">—</span></div>
-      <div class="row"><span class="lbl">z</span><span class="val" id="ui-z">—</span></div>
-    </div>
-  </div>
-
-  <!-- Controls hint -->
-  <div id="hint">
-    <b>Space</b> toggle dance
-    <span class="sep">|</span>
-    <b>1–6</b> select joint
-    <span class="sep">|</span>
-    <b>↑↓</b> rot X
-    <span class="sep">|</span>
-    <b>←→</b> rot Y
-    <span class="sep">|</span>
-    <b>Q/E</b> rot Z
-    <span class="sep">|</span>
-    <b>W</b> wave &nbsp;<b>J</b> jump &nbsp;<b>R</b> reset
-  </div>
-
-  <script type="module" src="js/main.js"></script>
+<script type="module" src="js/main.js"></script>
 </body>
 </html>
