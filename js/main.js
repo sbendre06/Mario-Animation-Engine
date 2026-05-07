@@ -467,9 +467,9 @@ animFolder.add(settings, 'danceSpeed', 0.25, 3.0, 0.05).name('Speed');
 // Arms – single slider per arm, anatomically constrained to forward hemisphere
 const armsFolder = gui.addFolder('Arms');
 const ctrlLA = armsFolder.add(settings, 'leftArm',  0, 1, 0.01)
-    .name('Left Arm  (↓ → fwd → ↑)');
+    .name('Left Arm Circle');
 const ctrlRA = armsFolder.add(settings, 'rightArm', 0, 1, 0.01)
-    .name('Right Arm (↓ → fwd → ↑)');
+    .name('Right Arm Circle');
 
 // Legs & Shoes
 const lowerFolder = gui.addFolder('Legs & Shoes');
