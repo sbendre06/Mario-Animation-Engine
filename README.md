@@ -1,11 +1,10 @@
-# Mario FK Dance — Math Reference
-**CPSC 4870 · 3D Spatial Computing · Yale University**
+# Mario Forward Kinematics Animation Engine
 
-This document covers every piece of mathematics used in the Mario FK Dance Animation Engine: the Lie group structure of rotations and rigid-body transforms, quaternion algebra, geodesic interpolation on SO(3), forward kinematics, keyframe spline construction, and the complete pipeline from Blender model to animated Three.js scene.
+This project entails an animation engine inspired by forward kinematics (FK), applied to a low-poly Mario character that was modeled from scratch in Blender and rendered in Three.js. The animations are driven by the user through a suite of interactive controls on the Three.js GUI, which were all built using quaternion spherical linear interpolation (SLERP) to represent and calculate rotations in SO(3). The goal of the project is to leverage principles of Lie groups and forward kinematics to demonstrate how simple animations can be created.
 
 ---
 
-## 1. The Rotation Group SO(3)
+## Rotations as Animations
 
 A rotation in three-dimensional Euclidean space is a linear map **R** : ℝ³ → ℝ³ that preserves lengths and orientations. The set of all such maps forms the **special orthogonal group**
 
@@ -13,17 +12,8 @@ A rotation in three-dimensional Euclidean space is a linear map **R** : ℝ³ �
 SO(3) = { R ∈ ℝ^{3×3} | R^T R = I,  det(R) = +1 }
 ```
 
-SO(3) is a **Lie group**: it is simultaneously a smooth manifold and a group. The manifold dimension is 3 (three degrees of freedom for a 3-D rotation), and the group operation is matrix multiplication. Importantly, SO(3) is **non-commutative** — applying rotation A then B generally gives a different result than B then A.
-
 ### Axis-Angle Representation
-
-Every element of SO(3) can be written in axis-angle form via the **Rodrigues formula**. Given a unit axis **ω̂** ∈ ℝ³ and an angle θ ∈ [0, 2π):
-
-```
-R(ω̂, θ) = I + sin(θ)[ω̂]× + (1 − cos(θ))[ω̂]×²
-```
-
-where [ω̂]× is the 3×3 skew-symmetric cross-product matrix of ω̂. In the code, all joint rotations begin life as axis-angle specifications:
+All of the rotation animations are initially specified in axis-angle form, and then they are converted into quaternion form:
 
 ```javascript
 // aq(ax, ay, az, deg) — axis-angle → unit quaternion
@@ -36,48 +26,20 @@ function aq(ax, ay, az, deg) {
 ```
 
 Examples used in the project:
-- `aq(1, 0, 0, 180)` — 180° rotation about the world X axis (arm raise hemisphere sweep)
+- `aq(1, 0, 0, 180)` — 180° rotation about the world X axis (arm raise)
 - `aq(0, 1, 0, 40)`  — 40° rotation about Y (head turn)
 - `aq(0, 0, 1, 18)`  — 18° rotation about Z (hat tilt, leg sway)
 
 ---
 
-## 2. Unit Quaternions and the Double Cover of SO(3)
-
-While rotation matrices are conceptually straightforward, their 9 components are heavily constrained (6 orthogonality conditions + 1 determinant condition). A far more computationally efficient representation is the **unit quaternion**.
-
-### Quaternion Algebra
-
-A quaternion is a hypercomplex number of the form
-
-```
-q = w + xi + yj + zk       w, x, y, z ∈ ℝ
-```
-
-with the multiplication rules **i² = j² = k² = ijk = −1**. A quaternion is often written as a scalar-vector pair q = (w, **v**) where **v** = (x, y, z). The **Hamilton product** of two quaternions q₁ = (w₁, **v₁**) and q₂ = (w₂, **v₂**) is:
+## Unit Quaternions
+Unit quaternions are very suitable for defining joint rotations, because they eliminate gimbal lock,  and allow for very efficient composition of rotations using the Hamilton product.
+A quaternion is often written as a scalar-vector pair q = (w, **v**) where **v** = (x, y, z). The **Hamilton product** of two quaternions q₁ = (w₁, **v₁**) and q₂ = (w₂, **v₂**) is:
 
 ```
 q₁ ⊗ q₂ = (w₁w₂ − v₁·v₂ ,  w₁v₂ + w₂v₁ + v₁ × v₂)
 ```
-
-A **unit quaternion** satisfies ‖q‖ = √(w² + x² + y² + z²) = 1, and lives on the 3-sphere S³ ⊂ ℝ⁴.
-
-### Encoding a Rotation
-
-Every rotation R(ω̂, θ) corresponds to a unit quaternion
-
-```
-q(ω̂, θ) = ( cos(θ/2),  sin(θ/2) · ω̂ )
-```
-
-The rotation of a point **p** ∈ ℝ³ by q is the **sandwich product**:
-
-```
-p' = q ⊗ [0, p] ⊗ q*       where q* = (w, −v) is the conjugate
-```
-
-Note the **double cover**: q and −q encode the same physical rotation. The unit quaternion group S³ is a double cover of SO(3), and Three.js's SLERP implementation accounts for this by negating one quaternion when their dot product is negative (choosing the shorter arc).
-
+Note the double cover: q and −q encode the same physical rotation. The unit quaternion group S³ is a double cover of SO(3), and Three.js's SLERP implementation accounts for this by negating one quaternion when their dot product is negative (choosing the shorter arc).
 In Three.js (and in this project), quaternions are stored in (x, y, z, w) component order. All joint rotations in the animation engine are unit quaternions.
 
 ---
