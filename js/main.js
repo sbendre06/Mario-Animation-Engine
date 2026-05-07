@@ -2,19 +2,22 @@
  * Mario FK Dance – CPSC 4870 | 3D Spatial Computing, Yale University
  *
  * Demonstrates:
- *   FK:            Joint rotations compose through the scene-graph hierarchy.
- *                  Rotating Left Leg automatically moves Left Shoe (its child).
+ *   FK:          Joint rotations chain through the scene-graph hierarchy.
+ *                Rotating Left_Leg automatically moves Left_Shoe (its child).
  *
- *   SO(3) SLERP:   Every joint rotation is driven by quaternion SLERP:
- *                    q(t) = SLERP(q_A, q_B, t)  via .slerpQuaternions()
- *                  No Euler-angle lerping anywhere.
+ *   SO(3) SLERP: Every joint rotation is driven by quaternion SLERP:
+ *                  q(t) = SLERP(q_A, q_B, t)  via .slerpQuaternions()
+ *                No Euler-angle lerping anywhere.
  *
- *   SE(3) chaining: World pose of Left Shoe =
- *                    T_world_torso ⊗ T_torso_leftLeg ⊗ T_leftLeg_shoe
- *                   Read live from matrixWorld; displayed in the GUI.
+ *   SE(3) chain: World pose of any end-effector (shoe, hand) is the product
+ *                  T_world_torso ⊗ T_torso_limb ⊗ T_limb_endeffector
+ *                composed automatically by Three.js matrixWorld.
  *
- *   Keyframe spline: A 4-beat looping sequence drives smooth eased SLERP
- *                    through each dance pose automatically.
+ *   Keyframe spline: 4-beat looping sequence drives eased SLERP through
+ *                    dance poses automatically.
+ *
+ * Note: Blender converts object names with spaces → underscores on GLB export.
+ *   "Left Arm" in Blender → "Left_Arm" in Three.js scene graph.
  */
 
 import * as THREE from 'three';
@@ -44,9 +47,9 @@ scene.background = new THREE.Color(0xa0a0a0);
 scene.fog = new THREE.Fog(0xa0a0a0, 10, 50);
 
 const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
-camera.position.set(0, 2, 5);
+camera.position.set(0, 2, -5);  // negative Z → facing Mario's front
 
-// ─── Lighting (matches Three.js skinning example) ────────────────────────────
+// ─── Lighting ────────────────────────────────────────────────────────────────
 
 const hemi = new THREE.HemisphereLight(0xffffff, 0x8d8d8d, 3);
 hemi.position.set(0, 20, 0);
@@ -65,13 +68,13 @@ scene.add(dirLight);
 
 // ─── Stage ───────────────────────────────────────────────────────────────────
 
-const mesh = new THREE.Mesh(
+const floor = new THREE.Mesh(
     new THREE.PlaneGeometry(100, 100),
     new THREE.MeshPhongMaterial({ color: 0xcbcbcb, depthWrite: false })
 );
-mesh.rotation.x = -Math.PI / 2;
-mesh.receiveShadow = true;
-scene.add(mesh);
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+scene.add(floor);
 
 const grid = new THREE.GridHelper(200, 40, 0x000000, 0x000000);
 grid.material.opacity = 0.1;
@@ -81,36 +84,33 @@ scene.add(grid);
 // ─── OrbitControls ───────────────────────────────────────────────────────────
 
 const controls = new OrbitControls(camera, renderer.domElement);
-controls.enablePan   = false;
-controls.enableZoom  = true;
+controls.enablePan  = false;
 controls.target.set(0, 1, 0);
 controls.update();
 
 // ─── Quaternion / FK Utilities ────────────────────────────────────────────────
 //
-// SO(3) SLERP: geodesic interpolation between two unit quaternions.
+// SO(3) SLERP: geodesic interpolation — always takes the shortest arc.
 //   SLERP(q_A, q_B, t) = q_A · (q_A⁻¹ · q_B)^t
 //
 // FK composition (SE(3) product on the rotation part):
 //   node.quaternion = q_rest ⊗ q_delta   (Hamilton product)
 //
-// The scene-graph automatically chains these up the hierarchy, so
-// rotating Left Leg's quaternion updates Left Shoe's world transform.
+// Three.js automatically chains these up the hierarchy, so rotating Left_Leg
+// updates Left_Shoe's world transform (FK end-effector follows parent). ✓
 
-const ID_Q = new THREE.Quaternion();  // identity
+const ID_Q = new THREE.Quaternion();
 
 function slerpQ(qa, qb, t) {
     const out = new THREE.Quaternion();
-    out.slerpQuaternions(qa, qb, t);  // geodesic SLERP on SO(3)
+    out.slerpQuaternions(qa, qb, t);
     return out;
 }
 
-// FK composition: final rotation = rest ⊗ delta
 function fkCompose(restQ, deltaQ) {
     return restQ.clone().multiply(deltaQ);
 }
 
-// Axis-angle → unit quaternion  (degrees for readability)
 function aq(ax, ay, az, deg) {
     const q = new THREE.Quaternion();
     q.setFromAxisAngle(new THREE.Vector3(ax, ay, az).normalize(), deg * Math.PI / 180);
@@ -119,11 +119,10 @@ function aq(ax, ay, az, deg) {
 
 // ─── Joint Registry ───────────────────────────────────────────────────────────
 
-const joints    = {};   // name → THREE.Object3D  (live reference)
-const restQuats = {};   // name → THREE.Quaternion (GLB rest pose, immutable)
+const joints    = {};
+const restQuats = {};
 
-// Exact node names as Three.js receives them from GLB.
-// Blender converts spaces → underscores on export (confirmed via debug output).
+// Exact names as exported by Blender → GLB (spaces become underscores)
 const ALL_JOINT_NAMES = [
     'Torso', 'Head', 'Nose',
     'Left_Arm', 'Right_Arm',
@@ -135,197 +134,181 @@ const ALL_JOINT_NAMES = [
     'Left_Eyebrow', 'Right_Eyebrow',
 ];
 
+// ─── Arm Slider Math ──────────────────────────────────────────────────────────
+//
+// Single [0..1] slider drives each arm through the FORWARD hemisphere only:
+//
+//   t = 0.0  →  arm hanging straight down   (rest)
+//   t = 0.5  →  arm horizontal in front of Mario
+//   t = 1.0  →  arm pointing straight up
+//
+// Implemented as SLERP(identity, R_x(180°), t) on SO(3).
+//
+// Why this works for BOTH arms:
+//   Left_Arm  rest ≈ R_x(+179°), local tip in +Y  → +X delta sweeps forward hemisphere ✓
+//   Right_Arm rest ≈ R_x(−8.7°), local tip in −Y  → same +X delta, symmetric result  ✓
+//
+// The arm can never reach behind Mario because 180° of X rotation maps the
+// tip exactly from down (0°) through forward (90°) to up (180°), staying
+// in the sagittal plane in front of the character.
+
+function armDelta(t) {
+    // SLERP on SO(3): geodesic from identity to R_x(-180°)
+    // The negative sign selects the forward-hemisphere arc for both arms.
+    return slerpQ(ID_Q, aq(1, 0, 0, -180), t);
+}
+
+// ─── Slider Helpers ───────────────────────────────────────────────────────────
+
+// Bipolar [-1..1]: SLERP between −maxDeg and +maxDeg; at t=0 gives identity.
+function bipolarDelta(axis3, maxDeg, t) {
+    const from = aq(...axis3, -maxDeg);
+    const to   = aq(...axis3,  maxDeg);
+    return slerpQ(from, to, (t + 1) / 2);
+}
+
+// Unipolar [0..1]: SLERP from identity to target.
+function unipolarDelta(axis3, targetDeg, t) {
+    return slerpQ(ID_Q, aq(...axis3, targetDeg), t);
+}
+
 // ─── Pose State ───────────────────────────────────────────────────────────────
-//
-// Slider values drive SLERP parameter t on SO(3).
-// Dance mode overrides sliders with the keyframe sequence.
-//
-// GLB rest-pose facts (extracted from mario.glb JSON chunk):
-//   Left Arm  rotation ≈ R_x(+179°)  → arm hangs in −Y; X-delta swings fwd/back
-//   Right Arm rotation ≈ R_x(−8.7°)  → nearly upright; X-delta works same way
-//   Left Leg  rotation ≈ R_x(−10.7°) → Z-delta gives lateral sway
-//   Right Leg rotation ≈ R_y(+180°)  → mirrored; same Z-delta sign = same world direction
-//   Left Shoe rotation  = identity   → Y-delta rotates toe in/out
-//   Right Shoe rotation ≈ R_y(180°)  → mirrored; same Y-delta sign works symmetrically
 
 const settings = {
     dance:        false,
     danceSpeed:   1.0,
 
-    // Arm controls
-    leftArmSwing:  0.0,   // [-1 = back, 0 = rest, +1 = forward]
-    leftArmRaise:  0.0,   // [ 0 = rest,                +1 = up ]
-    rightArmSwing: 0.0,
-    rightArmRaise: 0.0,
+    // Arm: 0 = hanging down, 0.5 = horizontal forward, 1 = straight up
+    leftArm:      0.0,
+    rightArm:     0.0,
 
     // Lower body
-    legSway:      0.0,    // [-1 = lean L, 0 = rest, +1 = lean R]
-    shoeShuffleL: 0.0,    // [-1 = toe-in,  0 = rest, +1 = toe-out]
+    legSway:      0.0,    // [-1..1]
+    shoeShuffleL: 0.0,
     shoeShuffleR: 0.0,
 
-    // Upper body
-    headTurn:     0.0,    // [-1 = look L, 0 = rest, +1 = look R]
-    hatTilt:      0.0,    // [-1 = tilt L, 0 = rest, +1 = tilt R]
-
-    // SE(3) chain readout (display only)
-    shoeWorldX:   '—',
-    shoeWorldY:   '—',
-    shoeWorldZ:   '—',
+    // Head / hat
+    headTurn:     0.0,    // [-1..1]
+    hatTilt:      0.0,
 };
 
-// ─── Slider → Quaternion Mapping ─────────────────────────────────────────────
-
-// Bipolar slider t ∈ [−1, 1] → SLERP between two extreme delta quaternions.
-// At t=0, SLERP of symmetric rotations around the same axis → identity. ✓
-function bipolarDelta(axis3, maxDeg, t) {
-    const from = aq(...axis3, -maxDeg);
-    const to   = aq(...axis3,  maxDeg);
-    return slerpQ(from, to, (t + 1) / 2);  // remap [−1,1] → [0,1]
-}
-
-// Unipolar slider t ∈ [0, 1] → SLERP from identity to target.
-function unipolarDelta(axis3, targetDeg, t) {
-    return slerpQ(ID_Q, aq(...axis3, targetDeg), t);
-}
+// ─── Slider → Pose Application ───────────────────────────────────────────────
 
 function applySliderPose() {
     if (!marioRoot) return;
 
-    // ── Left Arm ──────────────────────────────────────────────────────────────
-    // Rest ≈ R_x(179°). Additional X rotation swings the arm forward/back.
-    // X rotation by −160° on top of 179° → R_x(19°) → arm raises toward +Y.
+    // Arms – strictly forward hemisphere, anatomically correct
     if (joints['Left_Arm']) {
-        const qSwing = bipolarDelta([1,0,0], 75, settings.leftArmSwing);
-        const qRaise = unipolarDelta([1,0,0], -160, settings.leftArmRaise);
-        // SE(3) composition of two virtual DOFs on the same joint:
-        //   delta = q_raise ⊗ q_swing  (extrinsic: swing first, then raise)
-        const delta = qRaise.multiply(qSwing);
-        joints['Left_Arm'].quaternion.copy(fkCompose(restQuats['Left_Arm'], delta));
+        joints['Left_Arm'].quaternion.copy(
+            fkCompose(restQuats['Left_Arm'], armDelta(settings.leftArm))
+        );
     }
-
-    // ── Right Arm ─────────────────────────────────────────────────────────────
-    // Rest ≈ R_x(−8.7°). Same axis convention; X swing → forward/back.
     if (joints['Right_Arm']) {
-        const qSwing = bipolarDelta([1,0,0], 75, settings.rightArmSwing);
-        const qRaise = unipolarDelta([1,0,0], -160, settings.rightArmRaise);
-        const delta  = qRaise.multiply(qSwing);
-        joints['Right_Arm'].quaternion.copy(fkCompose(restQuats['Right_Arm'], delta));
+        joints['Right_Arm'].quaternion.copy(
+            fkCompose(restQuats['Right_Arm'], armDelta(settings.rightArm))
+        );
     }
 
-    // ── Left Leg ──────────────────────────────────────────────────────────────
-    // Rest ≈ R_x(−10.7°). Z-axis delta → lateral sway.
-    // FK: rotating Left_Leg automatically moves Left_Shoe (its child). ✓
+    // Legs (FK: shoe follows leg automatically)
     if (joints['Left_Leg']) {
-        const delta = bipolarDelta([0,0,1], 18, settings.legSway);
-        joints['Left_Leg'].quaternion.copy(fkCompose(restQuats['Left_Leg'], delta));
+        joints['Left_Leg'].quaternion.copy(
+            fkCompose(restQuats['Left_Leg'], bipolarDelta([0,0,1], 18, settings.legSway))
+        );
     }
-
-    // ── Right Leg ─────────────────────────────────────────────────────────────
-    // Rest ≈ R_y(170°) — mirrored leg. Same Z-delta sign gives symmetric sway.
     if (joints['Right_Leg']) {
-        const delta = bipolarDelta([0,0,1], 18, settings.legSway);
-        joints['Right_Leg'].quaternion.copy(fkCompose(restQuats['Right_Leg'], delta));
+        joints['Right_Leg'].quaternion.copy(
+            fkCompose(restQuats['Right_Leg'], bipolarDelta([0,0,1], 18, settings.legSway))
+        );
     }
 
-    // ── Shoes ─────────────────────────────────────────────────────────────────
-    // Y-rotation pivots the toe in/out.
-    // Left_Shoe rest = identity; Right_Shoe rest ≈ R_y(180°).
+    // Shoes
     if (joints['Left_Shoe']) {
-        const delta = bipolarDelta([0,1,0], 35, settings.shoeShuffleL);
-        joints['Left_Shoe'].quaternion.copy(fkCompose(restQuats['Left_Shoe'], delta));
+        joints['Left_Shoe'].quaternion.copy(
+            fkCompose(restQuats['Left_Shoe'], bipolarDelta([0,1,0], 35, settings.shoeShuffleL))
+        );
     }
     if (joints['Right_Shoe']) {
-        const delta = bipolarDelta([0,1,0], 35, settings.shoeShuffleR);
-        joints['Right_Shoe'].quaternion.copy(fkCompose(restQuats['Right_Shoe'], delta));
+        joints['Right_Shoe'].quaternion.copy(
+            fkCompose(restQuats['Right_Shoe'], bipolarDelta([0,1,0], 35, settings.shoeShuffleR))
+        );
     }
 
-    // ── Head ──────────────────────────────────────────────────────────────────
+    // Head & Hat
     if (joints['Head']) {
-        const delta = bipolarDelta([0,1,0], 40, settings.headTurn);
-        joints['Head'].quaternion.copy(fkCompose(restQuats['Head'], delta));
+        joints['Head'].quaternion.copy(
+            fkCompose(restQuats['Head'], bipolarDelta([0,1,0], 40, settings.headTurn))
+        );
     }
-
-    // ── Hat ───────────────────────────────────────────────────────────────────
     if (joints['Mario_Hat']) {
-        const delta = bipolarDelta([0,0,1], 18, settings.hatTilt);
-        joints['Mario_Hat'].quaternion.copy(fkCompose(restQuats['Mario_Hat'], delta));
+        joints['Mario_Hat'].quaternion.copy(
+            fkCompose(restQuats['Mario_Hat'], bipolarDelta([0,0,1], 18, settings.hatTilt))
+        );
     }
 }
 
 // ─── Dance Keyframes ─────────────────────────────────────────────────────────
 //
-// Four keyframes form a looping dance cycle.  Each entry stores delta
-// quaternions applied via FK composition: node.q = restQ ⊗ deltaQ.
-//
-// SLERP on SO(3) drives smooth geodesic transitions between beats.
-// The eased local-t avoids abrupt acceleration at beat boundaries.
-
-// Helper: compose raise + swing for one arm (same math as slider code)
-function armKF(swingT, raiseT, swingMax = 75) {
-    const qSwing = bipolarDelta([1,0,0], swingMax, swingT);
-    const qRaise = unipolarDelta([1,0,0], -160, raiseT);
-    return qRaise.multiply(qSwing);
-}
+// All arm values are in [0..1] using armDelta(t), guaranteeing the arm stays
+// in the forward hemisphere.  Alternating L/R arm heights creates the
+// classic pendulum swing without any backward overshoot.
 
 const DANCE_KF = [
-    // ── Beat 0 – idle neutral ────────────────────────────────────────────────
+    // Beat 0 – idle (arms slightly raised forward)
     {
-        'Left_Arm':   armKF( 0.15, 0.0),
-        'Right_Arm':  armKF(-0.15, 0.0),
-        'Left_Leg':   bipolarDelta([0,0,1], 18,  0.3),
-        'Right_Leg':  bipolarDelta([0,0,1], 18,  0.3),
-        'Left_Shoe':  bipolarDelta([0,1,0], 35,  0.2),
-        'Right_Shoe': bipolarDelta([0,1,0], 35, -0.2),
+        'Left_Arm':   armDelta(0.15),
+        'Right_Arm':  armDelta(0.12),
+        'Left_Leg':   bipolarDelta([0,0,1], 18,  0.30),
+        'Right_Leg':  bipolarDelta([0,0,1], 18,  0.30),
+        'Left_Shoe':  bipolarDelta([0,1,0], 35,  0.20),
+        'Right_Shoe': bipolarDelta([0,1,0], 35, -0.20),
         'Mario_Hat':  bipolarDelta([0,0,1], 18,  0.15),
         'Head':       bipolarDelta([0,1,0], 40,  0.0),
     },
-    // ── Beat 1 – left arm forward, right arm back ────────────────────────────
+    // Beat 1 – left arm forward/up, right arm low
     {
-        'Left_Arm':   armKF( 0.85, 0.0),
-        'Right_Arm':  armKF(-0.85, 0.0),
-        'Left_Leg':   bipolarDelta([0,0,1], 18,  0.1),
-        'Right_Leg':  bipolarDelta([0,0,1], 18, -0.6),
-        'Left_Shoe':  bipolarDelta([0,1,0], 35,  0.1),
-        'Right_Shoe': bipolarDelta([0,1,0], 35, -0.7),
-        'Mario_Hat':  bipolarDelta([0,0,1], 18,  0.4),
-        'Head':       bipolarDelta([0,1,0], 40,  0.3),
+        'Left_Arm':   armDelta(0.60),
+        'Right_Arm':  armDelta(0.05),
+        'Left_Leg':   bipolarDelta([0,0,1], 18,  0.10),
+        'Right_Leg':  bipolarDelta([0,0,1], 18, -0.55),
+        'Left_Shoe':  bipolarDelta([0,1,0], 35,  0.10),
+        'Right_Shoe': bipolarDelta([0,1,0], 35, -0.65),
+        'Mario_Hat':  bipolarDelta([0,0,1], 18,  0.40),
+        'Head':       bipolarDelta([0,1,0], 40,  0.25),
     },
-    // ── Beat 2 – both arms raised (victory / jump) ───────────────────────────
+    // Beat 2 – both arms raised (victory)
     {
-        'Left_Arm':   armKF( 0.0, 0.88),
-        'Right_Arm':  armKF( 0.0, 0.88),
-        'Left_Leg':   bipolarDelta([0,0,1], 18, -0.3),
-        'Right_Leg':  bipolarDelta([0,0,1], 18, -0.3),
-        'Left_Shoe':  bipolarDelta([0,1,0], 35, -0.3),
-        'Right_Shoe': bipolarDelta([0,1,0], 35,  0.3),
-        'Mario_Hat':  bipolarDelta([0,0,1], 18, -0.2),
+        'Left_Arm':   armDelta(0.90),
+        'Right_Arm':  armDelta(0.90),
+        'Left_Leg':   bipolarDelta([0,0,1], 18, -0.25),
+        'Right_Leg':  bipolarDelta([0,0,1], 18, -0.25),
+        'Left_Shoe':  bipolarDelta([0,1,0], 35, -0.25),
+        'Right_Shoe': bipolarDelta([0,1,0], 35,  0.25),
+        'Mario_Hat':  bipolarDelta([0,0,1], 18, -0.20),
         'Head':       bipolarDelta([0,1,0], 40,  0.0),
     },
-    // ── Beat 3 – right arm forward, left arm back ────────────────────────────
+    // Beat 3 – right arm forward/up, left arm low
     {
-        'Left_Arm':   armKF(-0.85, 0.0),
-        'Right_Arm':  armKF( 0.85, 0.0),
-        'Left_Leg':   bipolarDelta([0,0,1], 18, -0.6),
-        'Right_Leg':  bipolarDelta([0,0,1], 18,  0.1),
-        'Left_Shoe':  bipolarDelta([0,1,0], 35, -0.7),
-        'Right_Shoe': bipolarDelta([0,1,0], 35,  0.1),
-        'Mario_Hat':  bipolarDelta([0,0,1], 18, -0.4),
-        'Head':       bipolarDelta([0,1,0], 40, -0.3),
+        'Left_Arm':   armDelta(0.05),
+        'Right_Arm':  armDelta(0.60),
+        'Left_Leg':   bipolarDelta([0,0,1], 18, -0.55),
+        'Right_Leg':  bipolarDelta([0,0,1], 18,  0.10),
+        'Left_Shoe':  bipolarDelta([0,1,0], 35, -0.65),
+        'Right_Shoe': bipolarDelta([0,1,0], 35,  0.10),
+        'Mario_Hat':  bipolarDelta([0,0,1], 18, -0.40),
+        'Head':       bipolarDelta([0,1,0], 40, -0.25),
     },
 ];
 
-const CYCLE_DURATION = 1.8;  // seconds per 4-beat cycle
+const CYCLE_DURATION = 1.8;
 const N_BEATS        = DANCE_KF.length;
 
-function easeInOut(t) {
-    return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
-}
+function easeInOut(t) { return t < 0.5 ? 2*t*t : -1+(4-2*t)*t; }
 
 function getDanceParams(elapsed) {
-    const globalT  = (elapsed % CYCLE_DURATION) / CYCLE_DURATION;
-    const beatF    = globalT * N_BEATS;
-    const beatIdx  = Math.floor(beatF) % N_BEATS;
-    const localT   = easeInOut(beatF - Math.floor(beatF));
+    const globalT = (elapsed % CYCLE_DURATION) / CYCLE_DURATION;
+    const beatF   = globalT * N_BEATS;
+    const beatIdx = Math.floor(beatF) % N_BEATS;
+    const localT  = easeInOut(beatF - Math.floor(beatF));
     return { beatIdx, localT, globalT };
 }
 
@@ -337,47 +320,143 @@ function applyDancePose(elapsed) {
     for (const name of Object.keys(kfA)) {
         const node = joints[name];
         if (!node) continue;
-
-        const dA = kfA[name];
-        const dB = kfB[name] ?? ID_Q;
-
-        // SLERP on SO(3): geodesic interpolation between keyframe delta quaternions
-        const delta = slerpQ(dA, dB, localT);
-
+        // SLERP on SO(3): geodesic between keyframe delta quaternions
+        const delta = slerpQ(kfA[name], kfB[name] ?? ID_Q, localT);
         // FK composition: full rotation = rest ⊗ animated delta
         node.quaternion.copy(fkCompose(restQuats[name], delta));
     }
 
-    // Body groove: small sinusoidal sway on the root transform.
-    // Demonstrates root-level FK: rotating the root moves every child. ✓
+    // Root-level body groove: rotating the root moves ALL children (FK root) ✓
     if (marioRoot) {
-        marioRoot.rotation.z = Math.sin(elapsed * Math.PI * 4 / CYCLE_DURATION) * 0.04;
-        marioRoot.position.y = baseY + Math.abs(Math.sin(elapsed * Math.PI * 2 / CYCLE_DURATION)) * 0.04;
+        marioRoot.rotation.z =
+            Math.sin(elapsed * Math.PI * 4 / CYCLE_DURATION) * 0.04;
+        marioRoot.position.y =
+            baseY + Math.abs(Math.sin(elapsed * Math.PI * 2 / CYCLE_DURATION)) * 0.04;
     }
 }
+
+// ─── Time-Based Action Animations ────────────────────────────────────────────
+
+let eyebrowWiggleEnd    = 0;
+let eyeEmoteEnd         = 0;
+let eyeEmoteWasActive   = false;
+let legShuffleEnd       = 0;
+let legShuffleWasActive = false;
+
+const BROW_DURATION     = 1.8;
+const EYE_DURATION      = 2.5;
+const SHUFFLE_DURATION  = 3.0;   // seconds (~4 full sway cycles at 1.3 Hz)
+
+const EYE_JOINTS  = ['Left_Eye',  'Right_Eye'];
+const BROW_JOINTS = ['Left_Eyebrow', 'Right_Eyebrow'];
+
+function applyBrowWiggle(elapsed) {
+    if (elapsed >= eyebrowWiggleEnd) return;
+    const t   = elapsed - (eyebrowWiggleEnd - BROW_DURATION);
+    const osc = Math.abs(Math.sin(Math.PI * 7 * t));
+    const delta = unipolarDelta([0, 0, 1], 28, osc);
+    for (const name of BROW_JOINTS) {
+        if (joints[name]) joints[name].quaternion.copy(fkCompose(restQuats[name], delta));
+    }
+}
+
+function applyEyeEmote(elapsed) {
+    const active = elapsed < eyeEmoteEnd;
+
+    // On the frame the emote finishes, snap all affected joints to rest.
+    if (!active) {
+        if (eyeEmoteWasActive) {
+            for (const name of [...EYE_JOINTS, ...BROW_JOINTS]) {
+                if (joints[name]) joints[name].quaternion.copy(restQuats[name]);
+            }
+            eyeEmoteWasActive = false;
+        }
+        return;
+    }
+    eyeEmoteWasActive = true;
+
+    const t     = elapsed - (eyeEmoteEnd - EYE_DURATION);
+    const phase = t / EYE_DURATION;   // 0 → 1
+
+    // Fade-out envelope: full strength until phase 0.75, then smoothly → 0.
+    // This guarantees lookVal → 0 as the animation ends, returning eyes to rest.
+    const env = phase < 0.75
+        ? 1.0
+        : easeInOut((1.0 - phase) / 0.25);   // easeInOut(1→0) over last 25%
+
+    // Shifty-eyes: sinusoidal left/right, modulated by the fade envelope
+    const lookVal = Math.sin(Math.PI * 3.5 * t) * env;
+    const eyeDelta = bipolarDelta([0, 1, 0], 35, lookVal);
+    for (const name of EYE_JOINTS) {
+        if (joints[name]) joints[name].quaternion.copy(fkCompose(restQuats[name], eyeDelta));
+    }
+
+    // Eyebrow raise fades out in the first half, returning to rest on its own
+    const browRaise = unipolarDelta([0, 0, 1], 18, Math.max(0, 1 - phase * 2));
+    for (const name of BROW_JOINTS) {
+        if (joints[name]) joints[name].quaternion.copy(fkCompose(restQuats[name], browRaise));
+    }
+}
+
+function applyLegShuffle(elapsed) {
+    const active = elapsed < legShuffleEnd;
+
+    // Snap all affected joints to rest on the frame the animation finishes
+    if (!active) {
+        if (legShuffleWasActive) {
+            for (const name of ['Left_Leg', 'Right_Leg', 'Left_Shoe', 'Right_Shoe']) {
+                if (joints[name]) joints[name].quaternion.copy(restQuats[name]);
+            }
+            legShuffleWasActive = false;
+        }
+        return;
+    }
+    legShuffleWasActive = true;
+
+    const t     = elapsed - (legShuffleEnd - SHUFFLE_DURATION);
+    const phase = t / SHUFFLE_DURATION;   // 0 → 1
+
+    // Fade-out envelope: hold full amplitude then ease to 0 in the last 25%
+    // so legs and shoes return to rest position as the animation ends.
+    const env = phase < 0.75
+        ? 1.0
+        : easeInOut((1.0 - phase) / 0.25);
+
+    // Sinusoidal sway at 1.3 Hz
+    const osc = Math.sin(2 * Math.PI * 1.3 * t) * env;
+
+    // Legs sway left/right together
+    const legDelta = bipolarDelta([0, 0, 1], 16, osc * 0.7);
+    if (joints['Left_Leg'])  joints['Left_Leg'].quaternion.copy(fkCompose(restQuats['Left_Leg'],  legDelta));
+    if (joints['Right_Leg']) joints['Right_Leg'].quaternion.copy(fkCompose(restQuats['Right_Leg'], legDelta));
+
+    // Shoes go outward/inward in sync with the sway:
+    //   left shoe positive osc  → toes out;  negative → toes in
+    //   right shoe negative osc → toes out (mirrored rest quaternion)
+    const shoeAmt = osc * 0.9;
+    if (joints['Left_Shoe'])  joints['Left_Shoe'].quaternion.copy(fkCompose(restQuats['Left_Shoe'],  bipolarDelta([0,1,0], 35,  shoeAmt)));
+    if (joints['Right_Shoe']) joints['Right_Shoe'].quaternion.copy(fkCompose(restQuats['Right_Shoe'], bipolarDelta([0,1,0], 35, -shoeAmt)));
+}
+
+// ─── Reset ────────────────────────────────────────────────────────────────────
 
 function resetToRest() {
     for (const [name, node] of Object.entries(joints)) {
         node.quaternion.copy(restQuats[name]);
     }
-    if (marioRoot) {
-        marioRoot.rotation.z = 0;
-        marioRoot.position.y = baseY;
-    }
-    settings.leftArmSwing  = 0; settings.leftArmRaise  = 0;
-    settings.rightArmSwing = 0; settings.rightArmRaise = 0;
-    settings.legSway       = 0;
-    settings.shoeShuffleL  = 0; settings.shoeShuffleR = 0;
-    settings.headTurn      = 0; settings.hatTilt       = 0;
+    if (marioRoot) { marioRoot.rotation.z = 0; marioRoot.position.y = baseY; }
+    settings.leftArm      = 0; settings.rightArm     = 0;
+    settings.legSway      = 0;
+    settings.shoeShuffleL = 0; settings.shoeShuffleR = 0;
+    settings.headTurn     = 0; settings.hatTilt       = 0;
     refreshGUI();
 }
 
 // ─── GUI ─────────────────────────────────────────────────────────────────────
 
-// 'lil' is the UMD global injected by the <script> tag in index.html
 const gui = new lil.GUI({ title: 'Mario FK Dance', width: 280 });
 
-// ── Animation ────────────────────────────────────────────────────────────────
+// Animation
 const animFolder = gui.addFolder('Animation');
 animFolder.add(settings, 'dance').name('Dance').onChange(val => {
     setPoseControllersEnabled(!val);
@@ -385,68 +464,62 @@ animFolder.add(settings, 'dance').name('Dance').onChange(val => {
 });
 animFolder.add(settings, 'danceSpeed', 0.25, 3.0, 0.05).name('Speed');
 
-// ── Arms ─────────────────────────────────────────────────────────────────────
+// Arms – single slider per arm, anatomically constrained to forward hemisphere
 const armsFolder = gui.addFolder('Arms');
-const ctrlLSwing = armsFolder.add(settings, 'leftArmSwing',  -1, 1, 0.01).name('L Arm Swing');
-const ctrlLRaise = armsFolder.add(settings, 'leftArmRaise',   0, 1, 0.01).name('L Arm Raise');
-const ctrlRSwing = armsFolder.add(settings, 'rightArmSwing', -1, 1, 0.01).name('R Arm Swing');
-const ctrlRRaise = armsFolder.add(settings, 'rightArmRaise',  0, 1, 0.01).name('R Arm Raise');
+const ctrlLA = armsFolder.add(settings, 'leftArm',  0, 1, 0.01)
+    .name('Left Arm  (↓ → fwd → ↑)');
+const ctrlRA = armsFolder.add(settings, 'rightArm', 0, 1, 0.01)
+    .name('Right Arm (↓ → fwd → ↑)');
 
-// ── Lower Body ────────────────────────────────────────────────────────────────
+// Legs & Shoes
 const lowerFolder = gui.addFolder('Legs & Shoes');
-const ctrlSway   = lowerFolder.add(settings, 'legSway',      -1, 1, 0.01).name('Leg Sway');
-const ctrlShoeL  = lowerFolder.add(settings, 'shoeShuffleL', -1, 1, 0.01).name('Shoe Shuffle L');
-const ctrlShoeR  = lowerFolder.add(settings, 'shoeShuffleR', -1, 1, 0.01).name('Shoe Shuffle R');
+const ctrlSway  = lowerFolder.add(settings, 'legSway',      -1, 1, 0.01).name('Leg Sway');
+const ctrlShoeL = lowerFolder.add(settings, 'shoeShuffleL', -1, 1, 0.01).name('Shoe Shuffle L');
+const ctrlShoeR = lowerFolder.add(settings, 'shoeShuffleR', -1, 1, 0.01).name('Shoe Shuffle R');
 
-// ── Head ─────────────────────────────────────────────────────────────────────
+// Head & Hat
 const headFolder = gui.addFolder('Head & Hat');
-const ctrlHead   = headFolder.add(settings, 'headTurn', -1, 1, 0.01).name('Head Turn');
-const ctrlHat    = headFolder.add(settings, 'hatTilt',  -1, 1, 0.01).name('Hat Tilt');
+const ctrlHead = headFolder.add(settings, 'headTurn', -1, 1, 0.01).name('Head Turn');
+const ctrlHat  = headFolder.add(settings, 'hatTilt',  -1, 1, 0.01).name('Hat Tilt');
 
-// ── Actions ──────────────────────────────────────────────────────────────────
+// Actions
 const actFolder = gui.addFolder('Actions');
+
 actFolder.add({
     wave: () => {
         if (settings.dance) return;
-        settings.leftArmSwing  = -0.1;
-        settings.leftArmRaise  =  0.9;
-        settings.rightArmSwing =  0.0;
-        settings.rightArmRaise =  0.0;
-        settings.headTurn      =  0.3;
+        settings.leftArm  = 0.92;   // arm high
+        settings.rightArm = 0.08;   // other arm relaxed
+        settings.headTurn = 0.30;
         refreshGUI();
     }
 }, 'wave').name('Wave');
 
 actFolder.add({
-    jump: () => {
-        if (settings.dance) return;
-        settings.leftArmSwing  = 0;
-        settings.leftArmRaise  = 0.85;
-        settings.rightArmSwing = 0;
-        settings.rightArmRaise = 0.85;
-        settings.legSway       = 0;
-        settings.headTurn      = 0;
-        refreshGUI();
+    eyebrowWiggle: () => {
+        eyebrowWiggleEnd = elapsed + BROW_DURATION;
     }
-}, 'jump').name('Jump Pose');
+}, 'eyebrowWiggle').name('Eyebrow Wiggle');
 
 actFolder.add({
-    reset: () => {
-        if (settings.dance) return;
-        resetToRest();
+    eyeEmote: () => {
+        eyeEmoteEnd = elapsed + EYE_DURATION;
     }
+}, 'eyeEmote').name('Eye Emote');
+
+actFolder.add({
+    legShuffle: () => {
+        legShuffleEnd = elapsed + SHUFFLE_DURATION;
+    }
+}, 'legShuffle').name('Leg Shuffle');
+
+actFolder.add({
+    reset: () => { if (!settings.dance) resetToRest(); }
 }, 'reset').name('Reset All');
 
-// ── SE(3) Chain readout (informational) ───────────────────────────────────────
-const se3Folder = gui.addFolder('SE(3) Chain – Left_Shoe');
-const ctrlSX = se3Folder.add(settings, 'shoeWorldX').name('World X').disable();
-const ctrlSY = se3Folder.add(settings, 'shoeWorldY').name('World Y').disable();
-const ctrlSZ = se3Folder.add(settings, 'shoeWorldZ').name('World Z').disable();
-se3Folder.open();
-
-// All pose controllers in one array for bulk enable/disable
+// Bulk enable/disable when dance toggles
 const poseControllers = [
-    ctrlLSwing, ctrlLRaise, ctrlRSwing, ctrlRRaise,
+    ctrlLA, ctrlRA,
     ctrlSway, ctrlShoeL, ctrlShoeR,
     ctrlHead, ctrlHat,
 ];
@@ -463,13 +536,13 @@ function refreshGUI() {
 
 let marioRoot = null;
 let baseY     = 0;
+let elapsed   = 0;   // declare here so action callbacks can read it
 
 const loader = new GLTFLoader();
 loader.load('./mario.glb',
     gltf => {
         marioRoot = gltf.scene;
 
-        // ── Step 1: shadow-traverse to enable shadows on all meshes ──────────
         marioRoot.traverse(node => {
             if (node.isMesh) {
                 node.castShadow    = true;
@@ -477,10 +550,8 @@ loader.load('./mario.glb',
             }
         });
 
-        // ── Step 2: register joints via getObjectByName ───────────────────────
-        // getObjectByName returns the FIRST DFS match (always the parent
-        // transform node, never a same-named mesh child that may have identity
-        // quaternion).  Spaces in Blender names become underscores in GLB export.
+        // Use getObjectByName so we always get the FIRST (parent transform)
+        // node, not a same-named mesh child with identity quaternion.
         for (const name of ALL_JOINT_NAMES) {
             const node = marioRoot.getObjectByName(name);
             if (node) {
@@ -492,12 +563,12 @@ loader.load('./mario.glb',
         }
         console.log('Joints registered:', Object.keys(joints));
 
-        // ── Step 3: scale and centre ──────────────────────────────────────────
+        // Auto-scale to ≈ 1.8 world-units tall
         const box  = new THREE.Box3().setFromObject(marioRoot);
         const size = box.getSize(new THREE.Vector3());
-        const scl  = 1.8 / Math.max(size.x, size.y, size.z);
-        marioRoot.scale.setScalar(scl);
+        marioRoot.scale.setScalar(1.8 / Math.max(size.x, size.y, size.z));
 
+        // Stand on the floor and centre
         box.setFromObject(marioRoot);
         const centre = box.getCenter(new THREE.Vector3());
         marioRoot.position.set(-centre.x, -box.min.y, -centre.z);
@@ -509,35 +580,14 @@ loader.load('./mario.glb',
     err => console.error('GLB load error:', err)
 );
 
-// ─── SE(3) World-Position Readout ─────────────────────────────────────────────
-
-const _wp = new THREE.Vector3();
-
-function updateSE3Readout() {
-    // matrixWorld of Left Shoe encodes the full SE(3) chain:
-    //   T_world_torso ⊗ T_torso_leftLeg ⊗ T_leftLeg_shoe
-    // Three.js computes this via updateMatrixWorld() during render. ✓
-    const shoe = joints['Left_Shoe'];
-    if (!shoe) return;
-    shoe.getWorldPosition(_wp);
-    settings.shoeWorldX = _wp.x.toFixed(3);
-    settings.shoeWorldY = _wp.y.toFixed(3);
-    settings.shoeWorldZ = _wp.z.toFixed(3);
-    ctrlSX.updateDisplay();
-    ctrlSY.updateDisplay();
-    ctrlSZ.updateDisplay();
-}
-
 // ─── Animation Loop ───────────────────────────────────────────────────────────
 
 const clock = new THREE.Clock();
-let elapsed  = 0;
 
 function animate() {
     requestAnimationFrame(animate);
-
-    const dt   = clock.getDelta();
-    elapsed   += dt * settings.danceSpeed;
+    const dt = clock.getDelta();
+    elapsed += dt * settings.danceSpeed;
 
     controls.update();
 
@@ -546,13 +596,16 @@ function animate() {
             applyDancePose(elapsed);
         } else {
             applySliderPose();
-            // Smooth root back to upright when leaving dance
             marioRoot.rotation.z *= 0.9;
             marioRoot.position.y  = baseY + (marioRoot.position.y - baseY) * 0.9;
         }
 
-        marioRoot.updateMatrixWorld(true);  // ensure SE(3) chain is current
-        updateSE3Readout();
+        // Overlay time-based actions (run on top of dance or sliders)
+        applyBrowWiggle(elapsed);
+        applyEyeEmote(elapsed);
+        applyLegShuffle(elapsed);
+
+        marioRoot.updateMatrixWorld(true);
     }
 
     renderer.render(scene, camera);
